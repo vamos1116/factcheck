@@ -85,11 +85,20 @@
 </svg>
 <header><svg class="star"><use href="#star"/></svg><span class="name">팩트체크</span></header>
 <main>
-  <!-- 키 영역은 화면에서 뺐습니다. 이 브라우저에 저장된 키를 코드가 읽어 쓰는 숨김 칸만 남겨 둡니다. -->
-  <div hidden>
-    <input type="password" id="tavilyKey" autocomplete="off" tabindex="-1">
-    <input type="password" id="geminiKey" autocomplete="off" tabindex="-1">
-  </div>
+  <section class="card" id="keys">
+    <div class="keys">
+      <div><label for="tavilyKey">Tavily 키</label>
+        <input type="password" id="tavilyKey" autocomplete="off" spellcheck="false"></div>
+      <div><label for="geminiKey">Gemini 키</label>
+        <input type="password" id="geminiKey" autocomplete="off" spellcheck="false"></div>
+    </div>
+    <div class="row">
+      <button id="saveKeys" type="button">키 저장</button>
+      <button id="clearKeys" type="button">키 지우기</button>
+      <span class="note" id="keyMsg" style="margin:0"></span>
+    </div>
+    <p class="note">키는 이 브라우저에만 저장됩니다. 공용 PC에서는 사용 후 "키 지우기"를 누르세요.</p>
+  </section>
 
   <div class="hello"><svg class="star"><use href="#star"/></svg><h1>어떤 주장을 확인해 볼까요?</h1></div>
 
@@ -144,6 +153,18 @@ function lsDel(k){ try { localStorage.removeItem(k); } catch(e){} }
 
 $("tavilyKey").value = lsGet(KEY_T);
 $("geminiKey").value = lsGet(KEY_G);
+if (lsGet(KEY_T) || lsGet(KEY_G)) $("keyMsg").textContent = "저장된 키를 불러왔습니다.";
+
+$("saveKeys").onclick = () => {
+  const ok1 = lsSet(KEY_T, $("tavilyKey").value.trim());
+  const ok2 = lsSet(KEY_G, $("geminiKey").value.trim());
+  $("keyMsg").textContent = (ok1 && ok2) ? "키를 이 브라우저에 저장했습니다." : "저장하지 못했습니다. 브라우저가 저장을 막고 있을 수 있습니다.";
+};
+$("clearKeys").onclick = () => {
+  lsDel(KEY_T); lsDel(KEY_G);
+  $("tavilyKey").value = ""; $("geminiKey").value = "";
+  $("keyMsg").textContent = "저장된 키를 지웠습니다.";
+};
 
 // ===== 화면 도우미 =====
 function showError(msg){ const e=$("error"); e.textContent=msg; e.hidden=false; }
@@ -785,7 +806,7 @@ ${TOOL_FACTS}`;
     const { tKey, gKey } = keys();
     if (text) push({ type:"user", text });
     if (!tKey || !gKey){
-      push({ type:"bot", text:"이 브라우저에 저장된 Tavily 키와 Gemini 키를 찾지 못했습니다. 키가 있어야 검색과 판정을 할 수 있습니다." });
+      push({ type:"bot", text:"Tavily 키와 Gemini 키가 모두 필요합니다. 화면 맨 위 입력칸에 키를 넣고 \"키 저장\"을 누른 뒤 다시 보내 주세요." });
       return;
     }
     busy = true; sendBtn.disabled = true;
