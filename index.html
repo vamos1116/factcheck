@@ -36,6 +36,8 @@
   .ty-gov { background:#d6ecff; color:#0b3d78; } .ty-stat { background:#dff3e4; color:#14532d; }
   .ty-press { background:#ece4ff; color:#44217d; } .ty-enc { background:#fff1cf; color:#6b4a00; }
   .ty-blog { background:#ffe0e0; color:#8a1c1c; } .ty-unk { background:#e5e7eb; color:#374151; }
+  #candList button { display:block; width:100%; text-align:left; margin:8px 0; background:#fff; border:2px solid var(--accent); color:var(--ink); line-height:1.5; }
+  #candList button.orig { border-color:var(--line); color:var(--muted); font-size:17px; }
   a { color:var(--accent); }
   [hidden] { display:none !important; }
 </style>
@@ -63,6 +65,13 @@
     <div class="row"><button id="go" class="primary" type="button">검증하기</button></div>
     <div id="status" hidden></div>
     <div id="error" role="alert" hidden></div>
+  </section>
+
+  <section id="cands" hidden>
+    <h2 style="font-size:24px;margin-top:0">주장이 모호합니다</h2>
+    <p id="candWhy"></p>
+    <p style="font-weight:700">검증할 문장을 골라 주세요.</p>
+    <div id="candList"></div>
   </section>
 
   <section id="result" hidden>
@@ -232,7 +241,7 @@ function buildPrompt(claim, items){
   return `[주장]\n${claim}\n\n[근거]\n${ev}`;
 }
 
-async function callGemini(prompt, key, onModel){
+async function callGemini(prompt, key, onModel, system){
   let mi = 0, retry503 = 0;
   while (true){
     const model = MODELS[mi];
@@ -243,7 +252,7 @@ async function callGemini(prompt, key, onModel){
         method:"POST",
         headers:{ "Content-Type":"application/json", "x-goog-api-key": key },
         body: JSON.stringify({
-          systemInstruction:{ parts:[{ text: SYSTEM }] },
+          systemInstruction:{ parts:[{ text: system || SYSTEM }] },
           contents:[{ role:"user", parts:[{ text: prompt }] }],
           generationConfig:{ responseMimeType:"application/json", temperature:0 }
         })
@@ -326,16 +335,78 @@ function render(r, items, droppedCount){
   $("result").hidden = false;
 }
 
+// ===== 모호한 주장 다듬기 =====
+const CLARIFY_SYSTEM = `당신은 팩트체크 보조자입니다. 사용자가 입력한 [주장]이 그대로 검증 가능한지 판단하세요.
+다음 세 가지 중 검증 결과를 크게 좌우하는데 빠져 있는 것이 있으면 모호한 주장입니다.
+- 기준: 무엇을 어떤 지표·정의·범위로 말하는지 (예: "많다", "늘었다"의 기준)
+- 기간: 언제, 어느 기간의 이야기인지
+- 지역: 어느 지역·기관·대상의 이야기인지
+이미 충분히 구체적이면 ambiguous를 false로 하고 candidates는 빈 배열로 두세요.
+모호하면 ambiguous를 true로 하고, 빠진 항목을 missing에 적고, 검증할 수 있게 다듬은 문장 후보를 2~3개 만드세요.
+규칙:
+- 각 후보는 한 문장이며, 서로 다른 합리적 해석(기준·기간·지역을 구체화)이어야 합니다.
+- 주장에 없는 새로운 수치, 사람 이름, 기관 이름, 사실을 지어내지 마세요. 원래 주장의 내용은 그대로 유지하세요.
+- 기간을 정할 때는 [오늘 날짜]를 참고하세요.
+출력은 다음 JSON 하나만:
+{"ambiguous":true,"missing":["기준","기간","지역" 중 해당 항목],"candidates":["문장1","문장2"]}`;
+
+async function clarifyClaim(claim, gKey){
+  const prompt = `[오늘 날짜]\n${new Date().toISOString().slice(0,10)}\n\n[주장]\n${claim}`;
+  const g = await callGemini(prompt, gKey, m => setStatus("주장이 분명한지 확인하는 중입니다… (모델: "+m+")"), CLARIFY_SYSTEM);
+  try {
+    const a = g.text.indexOf("{"), b = g.text.lastIndexOf("}");
+    const o = JSON.parse(g.text.slice(a, b+1));
+    const cands = (Array.isArray(o.candidates) ? o.candidates : [])
+      .map(s => String(s).trim()).filter(s => s && s.length <= 300).slice(0,3);
+    const missing = (Array.isArray(o.missing) ? o.missing : []).map(String).filter(s => ["기준","기간","지역"].includes(s));
+    return { ambiguous: o.ambiguous === true && cands.length >= 2, missing, cands };
+  } catch(e){ return null; }   // 해석 실패 시 원문 그대로 검증
+}
+
+function showCandidates(original, c){
+  $("candWhy").textContent = "원래 문장: \"" + original + "\"\n빠져 있는 항목: " + (c.missing.length ? c.missing.join(", ") : "기준·기간·지역");
+  $("candWhy").style.whiteSpace = "pre-wrap";
+  const box = $("candList"); box.textContent = "";
+  const keys = () => [$("tavilyKey").value.trim(), $("geminiKey").value.trim()];
+  const pick = text => {
+    $("claim").value = text; $("cands").hidden = true;
+    const [t,g] = keys();
+    withBusy(() => runVerify(text, t, g));
+  };
+  c.cands.forEach(text => {
+    const btn = document.createElement("button"); btn.type = "button"; btn.textContent = text;
+    btn.onclick = () => pick(text); box.appendChild(btn);
+  });
+  const o = document.createElement("button"); o.type = "button"; o.className = "orig";
+  o.textContent = "원래 문장 그대로 검증하기"; o.onclick = () => pick(original); box.appendChild(o);
+  $("cands").hidden = false;
+}
+
 // ===== 검증 흐름 =====
-$("go").onclick = async () => {
-  clearError(); $("result").hidden = true;
+async function withBusy(fn){
+  clearError(); $("result").hidden = true; $("go").disabled = true;
+  try { await fn(); }
+  catch(e){ showError(e.message || "알 수 없는 오류가 났습니다."); }
+  finally { setStatus(""); $("go").disabled = false; }
+}
+
+$("go").onclick = () => {
+  $("cands").hidden = true;
   const claim = $("claim").value.trim();
   const tKey = $("tavilyKey").value.trim(), gKey = $("geminiKey").value.trim();
+  clearError(); $("result").hidden = true;
   if (!claim){ showError("주장을 입력해 주세요."); return; }
   if (!tKey){ showError("Tavily 키를 입력해 주세요."); return; }
   if (!gKey){ showError("Gemini 키를 입력해 주세요."); return; }
-  $("go").disabled = true;
-  try {
+  withBusy(async () => {
+    const c = await clarifyClaim(claim, gKey);
+    if (c && c.ambiguous){ showCandidates(claim, c); return; }   // 모호하면 판정 전에 후보부터 보여 줌
+    await runVerify(claim, tKey, gKey);
+  });
+};
+
+async function runVerify(claim, tKey, gKey){
+  {
     setStatus("근거를 찾는 중입니다…");
     const found = (await searchEvidence(claim, tKey)).slice(0,5);
     const { kept, dropped } = filterEvidence(claim, found);
@@ -355,12 +426,8 @@ $("go").onclick = async () => {
       r.verdict = HOLD; r.note = [r.note, "판정에 쓴 근거가 모두 블로그·커뮤니티 글이라 판단 유보로 처리했습니다."].filter(Boolean).join("\n");
     }
     render(r, kept, dropped.length);
-  } catch(e){
-    showError(e.message || "알 수 없는 오류가 났습니다.");
-  } finally {
-    setStatus(""); $("go").disabled = false;
   }
-};
+}
 </script>
 </body>
 </html>
